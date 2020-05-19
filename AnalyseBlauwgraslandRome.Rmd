@@ -1,0 +1,459 @@
+---
+title: "Analyse Blauwgrasland Rome"
+author: "C.H. van Immerzeel"
+date: "19-5-2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Intalleer dataset met basisgegevens voor de analyse
+devtools::install_github("KVIsweco/DataBlauwgraslandRome")
+library("DataBlauwgraslandRome")
+
+library("raster")
+library("magrittr")
+library("caret")
+library("randomForest")
+library("e1071")
+library("plot3D")
+
+crsAfoort <- sp::CRS("+init=epsg:28992") # epsg projection 28992 - amersfoort
+
+# Maak een dataframe van (een deel van de raster layers) in de de raster stack `r`.
+create_df <- function(r = stk,
+                      layers_to_drop = "") {
+  stk <- r %>% raster::dropLayer(layers_to_drop)
+  df <- as.data.frame(stk)
+  df$Veg <-
+    as.factor(df$Veg)
+  if ("Gt" %in% names(stk)) {
+    df$Gt <-
+      as.factor(df$Gt)
+  }
+  if ("Bofek" %in% names(stk)) {
+    df$Bofek <-
+      as.factor(df$Bofek)
+  }
+  row.names(df) <- 1:length(values(stk$Veg)) %>% as.numeric()
+  return(df)
+}
+
+# Haal de 'variable importance' uit het model `modFit` (gesorteerd).
+getVariableImportance <- function(modFit) {
+  x <- caret::varImp(modFit)
+  x <- x$importance
+  x$variabele <- rownames(x)
+  x %<>% dplyr::arrange(desc(Overall))
+  return(x)
+}
+
+# Bereken het oppervlak blauwgrasland (ha) op basis van een raster layer `pred_rast`met de voorspelling 
+# van blauwgrasland. 0=geen blauwgrasland; >0 = wel blauwgrasland.
+calc_area_blgrasland <- function(pred_rast) {
+  pred_rast[] <- pred_rast[] > 0
+  sm <- cellStats(pred_rast, stat = 'sum')
+  A <- res(pred_rast)[1] * res(pred_rast)[2] / 10000
+  return(sm * A)
+}
+
+area_blgrasland <- calc_area_blgrasland(stk$Veg)
+
+# Bereken het oppervlak (ha) van het gebied waarin volledige gegevens aanwezig zijn (`sampled_area`)
+calc_sample_area <- function() {
+  return( sum(values(sampled_area)) * res(sampled_area)[1]^2 / 10000 )
+}
+
+############################################################################################
+# Functies ivm optimalisatie
+
+# Voorspel blauwgrasland en en kans op blauwgrasland met model `modFit` en een verandering in GLG/GHG
+# tov van de waarden in `stk$GLG` en `stk$GHG`.
+# De veranderingen zijn beperkt tot de locaties waar raster waarden in `OptPerceel` niet gelijk zijn aan NA.
+# `dGxG` = verandering GLG/GHG; `stk` = raster stack met basisgegevens; `modFit` = model; 
+# `OptPerceel` = raster layer van te optimaliseren perceel (1=optimaliseren; NA=niet optimaliseren)
+# Output: `pred_rast` = raster layer met voorspelling blauwgrasland (1=wel; 0=niet);
+# `prob_rast` = raster layer met kansen op blauwgrasland;
+# `stk` = als input `stk`, maar de parameters die betrekking hebben op de grondwaterstanden zijn 
+# geoptimaliseerd in het `OptPerceel`.
+dGxG_blauwgrasland <-
+  function(dGxG, stk, modFit, OptPerceel = NULL) {
+    .stk <- stk
+    org_stk <- .stk
+    
+    if (!is.null(OptPerceel)) {
+      ok <- is.na(values(OptPerceel))
+      OptPerceel[ok] <- 0
+      OptPerceel[!ok] <- 1
+      .stk$GLG <- .stk$GLG + dGxG[1] * OptPerceel
+      .stk$GHG <- .stk$GHG + dGxG[2] * OptPerceel
+      OptPerceelNA <- OptPerceel
+      OptPerceelNA[OptPerceelNA[] == 0] <- NA
+      dif <- (.stk$GLG - .stk$GHG) * OptPerceelNA
+    } else {
+      .stk$GLG <- .stk$GLG + dGxG[1]
+      .stk$GHG <- .stk$GHG + dGxG[2]
+      dif <- .stk$GLG - .stk$GHG
+    }
+    
+    # Consistentie check: GHG moet 'natter' zijn dan GLG.
+    q10dif <- quantile(values(dif), .05, na.rm = TRUE)
+    .pred_rast <- .stk$Veg
+    suppressWarnings(.pred_rast[] <- NA)
+    .prob_rast <- .pred_rast
+    
+    if (q10dif > 0) {
+      # Als voldoende consistent, doe voorspelling
+      dGLG <- .stk$GLG - org_stk$GLG
+      .stk$GLGtovKl <- org_stk$GLGtovKl - dGLG
+      
+      if (!(dGxG[2] == 0)) {
+        #Verander GVG alleen als de GHG verandert
+        dGHG <- .stk$GHG - org_stk$GHG
+        dGVG <- dGHG
+        .stk$GVG <- org_stk$GVG + dGVG
+        .stk$GVGtovKl <- org_stk$GVGtovKl - dGVG
+      }
+      
+      df <- create_df(.stk)
+      ok <- complete.cases(df)
+      df <- df[ok,]
+      pred <- stats::predict(modFit, df) %>% as.numeric() - 1
+      prob <-
+        stats::predict(modFit, df, type = "prob") %>% .[, "1"]
+      #
+      .pred_rast <- .stk$Veg
+      suppressWarnings(.pred_rast[] <- NA)
+      .prob_rast <- .pred_rast
+      #
+      rownrs <- row.names(df) %>% as.numeric()
+      .pred_rast[rownrs] <- pred
+      .prob_rast[rownrs] <- prob
+    }
+    res <-
+      c(pred_rast = .pred_rast,
+        prob_rast = .prob_rast,
+        stk = .stk)
+    return(res)
+  }
+
+# Bereken de gemiddelde kans op blauwgrasland in het te optimaliseren perceel
+# (als !is.null(OptPerceel)) of van alle cel waarden in de raster layer `prob_rast`.
+# Input: `prob_rast` = raster layer met de kans op blauwgrasland;
+# `OptPerceel = raster layer van te optimaliseren perceel (1=optimaliseren; NA=niet optimaliseren)
+mean_prob <- function(prob_rast, OptPerceel) {
+  if (!is.null(OptPerceel)) {
+    ok <- is.na(values(OptPerceel))
+    OptPerceel[ok] <- 0
+    OptPerceel[!ok] <- 1
+    OptPerceelNA <- OptPerceel
+    OptPerceelNA[OptPerceelNA[] == 0] <- NA
+    return(cellStats(prob_rast * OptPerceelNA, stat = 'mean'))
+  } else {
+    return(cellStats(prob_rast, stat = 'mean'))
+  }
+}
+
+# Bereken de gemiddelde kans op blauwgrasland in het te optimaliseren perceel
+# bij een verandering van de GLG/GHG tov de GxG's in de raster stack `stk`.
+get_prob <- function(dGxG, stk, modFit, OptPerceel = NULL) {
+  res <- dGxG_blauwgrasland(dGxG, stk, modFit, OptPerceel)
+  if (!all(is.na(values(res$prob_rast)))) {
+    prob <- mean_prob(res$prob_rast, OptPerceel)
+  } else {
+    prob <- NA
+  }
+  return(prob)
+}
+
+# Genereer verschillende dGxG combinaties om het effect ervan op de kans op blauwgrasland
+# in het geselecteerde perceel te kunnen toetsen.
+# De verandering van de GHG is verondersteld gelijk te zijn aan: de verandering van de GLG/afact.
+get_dGxG <- function( dGLGmin=-100, dGLGmax=100, stp=5, afact=1 ) {
+  .each <- (dGLGmax - dGLGmin) / stp + 1
+  dGLG <- seq(dGLGmin, dGLGmax, length.out = .each)
+  dGHG <- rep(dGLG, each = .each) / afact
+  dGLG <- rep(dGLG, .each)
+  dGxG <- data.frame(dGLG, dGHG) %>% as.matrix()
+  return(dGxG)
+}
+
+# Probeer wat combinaties van GxG veranderingen teneinde het de grootste kans op blauwgrasland
+# te vinden. Per combinatie van dGLG/dGHG wordt de output van de functie `dGxG_blauwgrasland` bewaard.
+try_dGxGs <-
+  function(afact = 2, # verhouding dGLG/dGHG
+           stk,
+           modFit,
+           OptPerceel) {
+    dGxG <- get_dGxG(afact = afact)
+    dGxG_results <-
+      apply(dGxG, MARGIN = 1, dGxG_blauwgrasland , stk, modFit, OptPerceel)
+    return(dGxG_results)
+  }
+```
+
+### Opmerkingen vooraf.
+
+* Gebruik 64-bit versie van R (versienummer >=R-4.0.0);
+* Deze analyse maakt gebruik van de gegevens in de R-package in GitHub <https://github.com/KVIsweco/DataBlauwgraslandRome>;
+* Figuren en raster layers worden weggeschreven in de `home` directory.
+
+### Het huidige oppervlak blauwgrasland
+Het huidige oppervlak blauwgrasland is `r round(area_blgrasland,2)` ha (`r round(100*area_blgrasland/calc_sample_area(),1)`%)
+
+### Splits de gegevens voor het trainen en het testen van het model.
+Gebruik de helft van de gegevens voor het trainen van het model en de andere helft voor het testen van het model.
+```{r split_dataset}
+df <- create_df()
+ok <- complete.cases(df)
+df <- df[ok, ]
+set.seed(5)
+inTrain <-
+  caret::createDataPartition(y = df$Veg, p = 0.5, list = FALSE)
+training <- df[inTrain, ]
+testing <- df[-inTrain, ]
+```
+
+### Bepaal passende waarde van de modelparameters `.mtry` en `.ntree`.
+`.mtry` is het aantal parameters dat wordt gebruikt bij de bouw van iedere beslisboom.
+`.ntree` is het aantal beslisbomen dat wordt gebruikt in het model.
+
+```{r create_list_of_models, cache=TRUE}
+tunegrid <- expand.grid(.mtry=c(1:15)) 
+control <- caret::trainControl(method="repeatedcv", number=10, repeats=5, search="grid")
+modellist <- list()
+for (ntree in c(500, 1000, 1500, 2000, 2500)) {
+  set.seed(6)
+  fit <-
+      caret::train(
+      Veg ~ .,
+      data = training,
+      method = "rf",
+      tuneGrid = tunegrid,
+      trControl = control,
+      ntree = ntree
+    )
+  key <- toString(ntree)
+  modellist[[key]] <- fit
+}
+```
+
+### Vergelijk de resultaten van de modellen.
+```{r vergelijk_models}
+results <- caret::resamples(modellist)
+summary(results)
+dotplot(results)
+plot(modellist["500"][[1]],main="ntree=500")
+plot(modellist["1000"][[1]],main="ntree=1000")
+plot(modellist["1500"][[1]],main="ntree=1500")
+plot(modellist["2000"][[1]],main="ntree=2000")
+plot(modellist["2500"][[1]],main="ntree=2500")
+```
+
+### Zoek het eenvoudigste model (mtry) dat nog voldoet.
+Het eenvoudigste model dat nog voldoet (10% verlies van performance)
+
+Gebruik daarbij `.ntree=500` (op basis van de bovenstaande plots).
+Verwijder niet gebruikte modellen.
+
+```{r selecteer_model}
+.ntree <- 500
+sel_modelnr <-
+  caret::tolerance(
+    modellist[as.character(.ntree)][[1]]$results,
+    metric = "Kappa",
+    tol = 10,
+    maximize = TRUE
+  )
+mtry <- modellist[as.character(.ntree)][[1]]$results$mtry[sel_modelnr] 
+modFit <- modellist[as.character(.ntree)][[1]]
+rm(modellist)
+```
+
+Voor het gekozen model geldt `mtry=: `r mtry``.
+
+### Plot variable importance van het gekozen model.
+De grafiek wordt weggeschreven naar de 'home' directory als `variable_importance.png`.
+
+```{r plot_variable_importance, echo=FALSE}
+x <- getVariableImportance(modFit)
+  barplot(
+    x$Overall,
+    names.arg = x$variabele,
+    las = 2,
+    main = "Variable importance",
+    ylab = "(%)"
+  )
+```
+```{r schrijf_figuur_variable_importance, echo=FALSE}
+png(file.path(path.expand("~"), "variable_importance.png"))
+  barplot(
+    x$Overall,
+    names.arg = x$variabele,
+    las = 2,
+    main = "Variable importance",
+    ylab = "(%)"
+  )
+dev.off()
+```
+
+### Controleer het functioneren van het model met behulp van de test dataset.
+Maak daarvoor de 'confusion matrix'.
+```{r test_model}
+cm  <-
+  confusionMatrix(
+    data = stats::predict( modFit, testing ),
+    reference = testing$Veg,
+    positive = levels(testing$Veg)[2]
+  )
+cm
+```
+
+### Maak rasters van resp. de voorspellingen, kansen en kwalificaties.
+De rasters worden weggeschreven naar de 'home' directory als respectivelijk `pred_rast.tif, prob_rast.tif en kwal_rast.tif`.
+
+```{r maak_rasters}
+pred <- stats::predict( modFit, df ) %>% as.numeric() - 1
+prob <- stats::predict( modFit, df, type = "prob" ) %>% .[,"1"]
+
+corr_pos <- df$Veg=="1" & pred=="1" 
+corr_neg <- df$Veg=="0" & pred=="0" 
+false_pos <- df$Veg=="0" & pred=="1" 
+false_neg <- df$Veg=="1" & pred=="0" 
+kwal <- rep(0,length(df$Veg))
+kwal[corr_pos]  <- 1
+kwal[corr_neg]  <- 2
+kwal[false_pos] <- -1
+kwal[false_neg] <- -2
+
+pred_rast <- stk$Veg
+suppressWarnings(pred_rast[] <- NA)
+
+prob_rast <- pred_rast
+kwal_rast <- pred_rast
+
+rownrs <- row.names(df) %>% as.numeric()
+training_rownrs <- row.names(training) %>% as.numeric()
+pred_rast[rownrs] <- pred
+proj4string(pred_rast) <- crsAfoort
+prob_rast[rownrs] <- prob
+proj4string(prob_rast) <- crsAfoort
+kwal_rast[rownrs] <- kwal
+proj4string(kwal_rast) <- crsAfoort
+kwal_rast[training_rownrs] <- 0
+
+plot(pred_rast)
+plot(prob_rast)
+plot(kwal_rast)
+```
+```{r schrijf_uitvoer_rasters, echo=FALSE}
+raster::writeRaster(pred_rast,
+                    file.path(path.expand("~"), "pred_rast.tif"),
+                    overwrite = TRUE)
+raster::writeRaster(kwal_rast,
+                    file.path(path.expand("~"), "kwal_rast.tif"),
+                    overwrite = TRUE)
+raster::writeRaster(prob_rast,
+                    file.path(path.expand("~"), "prob_rast.tif"),
+                    overwrite = TRUE)
+```
+
+### Optimaliseer GxG's in geselecteerd perceel.
+```{r optimaliseer, cache=TRUE}
+# Knip de gegevens zodat alleen het te optimaliseren perceel erin ligt (scheelt tijd en geheugen).
+# Maak een plot van het resultaat (`s3d`) en schrijf dit weg  naar de 'home' directory in het bestand
+# 'dGxG - average probability blauwgrasland.png'.
+# De verhoging van de GHG is steeds gelijk gesteld aan de verhoging van de GLG (afact=1).
+e <- perceel %>% trim() %>% extent()
+r <- crop(stk, e)
+p <- crop(perceel, e)
+dGxG_results <- try_dGxGs(afact = 1, r, modFit, p)
+prob <-
+  sapply(dGxG_results, function(x) {
+    mean_prob(x$prob_rast, p)
+  })
+x <- get_dGxG(afact = 1)
+x <- cbind(x, prob) %>% as.data.frame()
+ok <- x$prob != -1
+x <- x[ok,]
+```
+```{r maak_s3d, echo=FALSE}
+scatter3D(
+  x$dGLG,
+  x$dGHG,
+  x$prob,
+  theta = 45,
+  phi = 0,
+  pch = 20,
+  cex = 2,
+  bty = "g",
+  main = "",
+  colkey = list(at = c(2, 4, 6, 8)),
+  xlab = ("dGLG (cm)"),
+  ylab = ("dGHG (cm)"),
+  zlab = ("Average probability blauwgrasland"),
+  ticktype = "detailed"
+)
+```
+```{r plot_s3d, echo=FALSE}
+png(filename = file.path(
+  path.expand("~"),
+  "dGxG - average probability blauwgrasland.png"
+))
+scatter3D(
+  x$dGLG,
+  x$dGHG,
+  x$prob,
+  theta = 45,
+  phi = 0,
+  pch = 20,
+  cex = 2,
+  bty = "g",
+  main = "",
+  colkey = list(at = c(2, 4, 6, 8)),
+  xlab = ("dGLG (cm)"),
+  ylab = ("dGHG (cm)"),
+  zlab = ("Average probability blauwgrasland"),
+  ticktype = "detailed"
+)
+dev.off()
+```
+```{r selecteer_optim_dGxG}
+# Selecteer dGxG die de grootste kanst op blauwgrasland geeft.
+i <- which.max(x$prob)
+max_prob <- max(x$prob, na.rm=TRUE)
+x$prob <- NULL
+dGxG <- x[i,] %>% as.numeric()
+```
+
+De hoogste kans op blauwgrasland is `r round(100*max_prob,0)`% bij een verandering van resp. de
+GLG en GHG van `r dGxG`.
+
+```{r bereken_opt_prob_rast}
+# Maak raster layer met de kansen op blauwgrasland bij optimale GxG's voor geselecteerd perceel; plot dit raster layer 
+# en schrijf weg  naar de 'home' directory in het bestand 'Probability OptPerceel.tif'.
+# Schrijf ook de optimale GHG en GLG raster layers weg naar resp. 'GHG_Optperceel.tif' en 'GLG_Optperceel.tif'.
+opt <- dGxG_blauwgrasland(dGxG, stk, modFit, perceel) 
+plot( opt$prob_rast )
+```
+```{r schrijf_opt_rast, echo=FALSE }
+raster::writeRaster(opt$prob_rast,
+                    file.path(path.expand("~"), "Probability OptPerceel.tif"),
+                    overwrite = TRUE)
+raster::writeRaster(opt$stk$GHG,
+                    file.path(path.expand("~"), "GHG_Optperceel.tif"),
+                    overwrite = TRUE)
+raster::writeRaster(opt$stk$GLG,
+                    file.path(path.expand("~"), "GLG_Optperceel.tif"),
+                    overwrite = TRUE)
+```
+
+Bereken de gemiddelde GHG en GLG (cm-mv) in het perceel na optimalisatie.
+```{r gem_GHG_GLG_opt}
+GHG_gem_opt_perceel <- mean_prob(opt$stk$GHG, perceel)
+GLG_gem_opt_perceel <- mean_prob(opt$stk$GLG, perceel)
+```
+
+In het geoptimaliseerde perceel is de gemiddelde GHG `r round(GHG_gem_opt_perceel,0)` (cm-mv).
+In het geoptimaliseerde perceel is de gemiddelde GLG `r round(GLG_gem_opt_perceel,0)` (cm-mv).
