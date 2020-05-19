@@ -1,6 +1,6 @@
 ---
-title: "Readme"
-author: "C.H. van Immerzeel"
+title: "Optimalisatie van natuurbeheer met behulp van machine learning"
+author: "Kees van Immerzeel / Willem Molenaar"
 date: "19-5-2020"
 output: html_document
 ---
@@ -9,22 +9,13 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## Samenvatting
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Om te onderzoeken of de techniek van ‘machine learning’ bruikbaar is om het beheer in een natuurgebied te optimaliseren zijn de gegevens gebruikt van het schraallandgebied Rome, gelegen nabij Drachten (FR). Er is een model geconstrueerd dat gevoed is met abiotische gegevens die samenhangen met het voorkomen van blauwgrasland.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Het geconstrueerde model blijkt goed in staat te zijn het huidige voorkomen van blauwgrasland te verklaren. Het model laat zien dat in een geselecteerd perceel een verhoging van de grondwaterstand bij kan dragen aan de ontwikkeling van blauwgrasland. 
+De techniek kan helpen om ook in andere natuurgebieden de locatie specifieke optimale groeiomstandigheden te vinden voor natuurlijke vegetaties.
 
-```{r cars}
-summary(cars)
-```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## R-Markdown script
+Het bestand `AnalyseBlauwgraslandRome.Rmd` bevat de scripts maarmee het vegetatievoorspellingsmodel is gemaakt. Tevens toont het script de resultaten die met het model zijn verkregen.
