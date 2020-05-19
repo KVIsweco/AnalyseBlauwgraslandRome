@@ -60,7 +60,7 @@ calc_area_blgrasland <- function(pred_rast) {
 
 area_blgrasland <- calc_area_blgrasland(stk$Veg)
 
-# Bereken het oppervlak (ha) van het gebied waarin volledige gegevens aanwezig zijn (`sampled_area`)
+# Bereken het oppervlak (ha) van het gebied waarin volledige gegevens aanwezig zijn (`sampled_area`).
 calc_sample_area <- function() {
   return( sum(values(sampled_area)) * res(sampled_area)[1]^2 / 10000 )
 }
