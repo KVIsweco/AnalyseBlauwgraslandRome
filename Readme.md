@@ -1,10 +1,8 @@
 # Summary
 
-To investigate if the technique of `machine learning` can be used to optimise the management of natural areas, data is used of the pastures in 'Rome', situated near Drachten (the Netherlands). A model is constructed using local abiotic data that is possibly relevant to the occurence of 'blue grassland' (Cirsio dissecti-Molinietum).
+To investigate if the technique of machine learning can be used to optimise the management of natural areas, data is used of the pastures in 'Rome', situated near Drachten (the Netherlands). A model is constructed using local abiotic data that is possibly relevant to the occurence of 'blauwgrasland' a species-rich fen meadow community (Cirsio dissecti-Molinietum).
 
-It turns out that the constructed model is well capable of predicting the present occurance of 'blue grassland'. The model shows that, in a selected plot, a rising of the groundwater table can contribute significantly to the development of Cirsio-Molinietum. 
-
-The technique being used may help to find optimal growing conditions for natural vegetations in other natural areas.
+It turns out that the constructed model is well capable of predicting the present occurance of Cirsio-Molinietum. The model shows that, in a selected plot, a rising of the groundwater table can contribute significantly to the development of 'blue grassland'. The technique being used may help to find optimal growing conditions for natural vegetations in other natural areas.
 
 The results of this research is published in a professional journal ([H2O](https://www.h2owaternetwerk.nl/vakartikelen/optimalisatie-van-natuurbeheer)).
 
